@@ -1,1 +1,3 @@
-"# cf-prowler-app-setup" 
+# Cloud Formation Template
+
+## Create Infrastructure to Deploy Prowler
