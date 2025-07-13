@@ -234,8 +234,6 @@ Resources:
       IamInstanceProfile: !Ref EC2InstanceProfile
       UserData:
         Fn::Base64: !Sub |
-          #!/bin/bash
-
           # This script sets up Docker and Docker Compose on an Amazon Linux 2023 EC2 instance.
           # It is designed to be used as a UserData script during instance launch.
 
@@ -252,36 +250,20 @@ Resources:
           sudo dnf clean all
           sudo dnf makecache
 
-          # 5. Install Docker CE, Docker CLI, and containerd.io
-          # We will install the compose plugin separately using a direct download.
-          sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin
+          # 5. Install Docker CE, Docker CLI, containerd.io, docker-buildx-plugin, and docker-compose-plugin
+          # This command installs all necessary Docker components, including the Compose plugin, from the official repository.
+          sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-          # 6. Manually install Docker Compose plugin (v2)
-          # This ensures the plugin is placed in a location discoverable by the 'docker' CLI.
-          echo "Manually installing Docker Compose plugin..."
-
-          # Create the directory for Docker CLI plugins if it doesn't exist
-          sudo mkdir -p /usr/libexec/docker/cli-plugins/
-
-          # Get the latest Docker Compose release version
-          COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep -Po '"tag_name": "\K[^"]*')
-
-          # Download the Docker Compose binary to the plugin directory
-          sudo curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/libexec/docker/cli-plugins/docker-compose
-
-          # Make the Docker Compose binary executable
-          sudo chmod +x /usr/libexec/docker/cli-plugins/docker-compose
-
-          # 7. Start and enable Docker service
+          # 6. Start and enable Docker service
           sudo systemctl start docker
           sudo systemctl enable docker
 
-          # 8. Add ec2-user to the docker group
+          # 7. Add ec2-user to the docker group
           # This allows the ec2-user to run docker commands without 'sudo' in future SSH sessions.
           # Note: This change will take effect for new login sessions, not for the current UserData script execution.
           sudo usermod -aG docker ec2-user
 
-          # 9. Verify installations
+          # 8. Verify installations
           sudo docker ps
           sudo docker compose version
 
@@ -303,8 +285,6 @@ Resources:
           # command for ec2-user is not effective for the current script execution.
           # For subsequent manual runs by ec2-user, 'sudo' might not be needed after re-logging in.
           sudo docker compose up -d
-
-          
 
       Tags:
         - Key: Name
