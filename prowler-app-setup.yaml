@@ -1,0 +1,354 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Prowler App Infrastructure - VPC, EC2, IAM Role, and Security Group"
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: prowler-app
+    Description: Project name for resource naming
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - qa
+      - stag
+      - prod
+    Description: Environment for resource naming
+
+  AllowedCIDR:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: CIDR block allowed for port 80 access
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/(1[6-9]|2[0-8]))$|^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/(3[0-2]|[12][0-9]|[0-9]))$
+
+  InstanceSize:
+    Type: String
+    Default: t4g.medium
+    AllowedValues:
+      - t3.medium
+      - t3a.medium
+      - t4g.medium
+    Description: Instance size for the prowler server
+
+  LatestAmiId:
+    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
+    Default: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+
+Resources:
+  # VPC
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/28
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub "vpc-${ProjectName}-${Environment}"
+
+  # Public Subnet
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.0.0/28
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "subnet-public-${ProjectName}-${Environment}"
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "igw-${ProjectName}-${Environment}"
+
+  # Attach Internet Gateway to VPC
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  # Route Table
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "rt-public-${ProjectName}-${Environment}"
+
+  # Default Route
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  # Associate Route Table with Public Subnet
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet
+
+  # Security Group
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "nsg-${ProjectName}-${Environment}"
+      GroupDescription: Security group for Prowler EC2 instance
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref AllowedCIDR
+          Description: HTTP access from specified CIDR
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          CidrIp: !Ref AllowedCIDR
+          Description: Port 3000 access from specified CIDR
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub "nsg-${ProjectName}-${Environment}"
+
+  # Custom IAM Policy
+  CustomIAMPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "iampolicy-custom-${ProjectName}-${Environment}"
+      Description: Custom policy for Prowler with additional read-only permissions
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowMoreReadOnly
+            Effect: Allow
+            Action:
+              - account:Get*
+              - appstream:Describe*
+              - appstream:List*
+              - backup:List*
+              - backup:Get*
+              - bedrock:List*
+              - bedrock:Get*
+              - cloudtrail:GetInsightSelectors
+              - codeartifact:List*
+              - codebuild:BatchGet*
+              - codebuild:ListReportGroups
+              - cognito-idp:GetUserPoolMfaConfig
+              - dlm:Get*
+              - drs:Describe*
+              - ds:Get*
+              - ds:Describe*
+              - ds:List*
+              - dynamodb:GetResourcePolicy
+              - ec2:GetEbsEncryptionByDefault
+              - ec2:GetSnapshotBlockPublicAccessState
+              - ec2:GetInstanceMetadataDefaults
+              - ecr:Describe*
+              - ecr:GetRegistryScanningConfiguration
+              - elasticfilesystem:DescribeBackupPolicy
+              - glue:GetConnections
+              - glue:GetSecurityConfiguration*
+              - glue:SearchTables
+              - glue:GetMLTransforms
+              - lambda:GetFunction*
+              - logs:FilterLogEvents
+              - lightsail:GetRelationalDatabases
+              - macie2:GetMacieSession
+              - macie2:GetAutomatedDiscoveryConfiguration
+              - s3:GetAccountPublicAccessBlock
+              - shield:DescribeProtection
+              - shield:GetSubscriptionState
+              - securityhub:BatchImportFindings
+              - securityhub:GetFindings
+              - servicecatalog:Describe*
+              - servicecatalog:List*
+              - ssm:GetDocument
+              - ssm-incidents:List*
+              - states:ListTagsForResource
+              - support:Describe*
+              - tag:GetTagKeys
+              - wellarchitected:List*
+            Resource: "*"
+          - Sid: AllowAPIGatewayReadOnly
+            Effect: Allow
+            Action:
+              - apigateway:GET
+            Resource:
+              - "arn:*:apigateway:*::/restapis/*"
+              - "arn:*:apigateway:*::/apis/*"
+
+  # IAM Role for EC2
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "iamrole-${ProjectName}-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/SecurityAudit
+        - arn:aws:iam::aws:policy/job-function/ViewOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - !Ref CustomIAMPolicy
+      Tags:
+        - Key: Name
+          Value: !Sub "iamrole-${ProjectName}-${Environment}"
+
+  # Instance Profile
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "instanceprofile-${ProjectName}-${Environment}"
+      Roles:
+        - !Ref EC2Role
+
+  # EC2 Instance
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceSize
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+
+          # This script sets up Docker and Docker Compose on an Amazon Linux 2023 EC2 instance.
+          # It is designed to be used as a UserData script during instance launch.
+
+          # 1. Update system packages
+          sudo dnf update -y
+
+          # 2. Install dnf-plugins-core (required for dnf config-manager)
+          sudo dnf -y install dnf-plugins-core
+
+          # 3. Add the official Docker CE repository for Amazon Linux
+          sudo dnf config-manager --add-repo https://download.docker.com/linux/amazonlinux/docker-ce.repo
+
+          # 4. Clean and rebuild dnf cache to recognize the new Docker repository
+          sudo dnf clean all
+          sudo dnf makecache
+
+          # 5. Install Docker CE, Docker CLI, and containerd.io
+          # We will install the compose plugin separately using a direct download.
+          sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin
+
+          # 6. Manually install Docker Compose plugin (v2)
+          # This ensures the plugin is placed in a location discoverable by the 'docker' CLI.
+          echo "Manually installing Docker Compose plugin..."
+
+          # Create the directory for Docker CLI plugins if it doesn't exist
+          sudo mkdir -p /usr/libexec/docker/cli-plugins/
+
+          # Get the latest Docker Compose release version
+          COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep -Po '"tag_name": "\K[^"]*')
+
+          # Download the Docker Compose binary to the plugin directory
+          sudo curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/libexec/docker/cli-plugins/docker-compose
+
+          # Make the Docker Compose binary executable
+          sudo chmod +x /usr/libexec/docker/cli-plugins/docker-compose
+
+          # 7. Start and enable Docker service
+          sudo systemctl start docker
+          sudo systemctl enable docker
+
+          # 8. Add ec2-user to the docker group
+          # This allows the ec2-user to run docker commands without 'sudo' in future SSH sessions.
+          # Note: This change will take effect for new login sessions, not for the current UserData script execution.
+          sudo usermod -aG docker ec2-user
+
+          # 9. Verify installations
+          sudo docker ps
+          sudo docker compose version
+
+          # --- Prowler App Setup ---
+          # This section downloads the Prowler docker-compose files and starts the application.
+
+          # Change to the ec2-user's home directory to download Prowler files
+          # This ensures the files are in a standard location for the user.
+          cd /home/ec2-user || { echo "Failed to change directory to /home/ec2-user. Exiting."; exit 1; }
+
+          # Download Prowler docker-compose.yml
+          curl -LO https://raw.githubusercontent.com/prowler-cloud/prowler/refs/heads/master/docker-compose.yml
+
+          # Download Prowler .env file
+          curl -LO https://raw.githubusercontent.com/prowler-cloud/prowler/refs/heads/master/.env
+
+          # Start Prowler containers using docker compose
+          # Using 'sudo' here because the UserData script runs as root, and the 'newgrp docker'
+          # command for ec2-user is not effective for the current script execution.
+          # For subsequent manual runs by ec2-user, 'sudo' might not be needed after re-logging in.
+          sudo docker compose up -d
+
+          
+
+      Tags:
+        - Key: Name
+          Value: !Sub "ec2-${ProjectName}-${Environment}"
+
+Outputs:
+  VPCId:
+    Description: VPC ID
+    Value: !Ref VPC
+    Export:
+      Name: !Sub "${AWS::StackName}-VPC-ID"
+
+  PublicSubnetId:
+    Description: Public Subnet ID
+    Value: !Ref PublicSubnet
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnet-ID"
+
+  SecurityGroupId:
+    Description: Security Group ID
+    Value: !Ref SecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-SecurityGroup-ID"
+
+  EC2InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref EC2Instance
+    Export:
+      Name: !Sub "${AWS::StackName}-EC2Instance-ID"
+
+  EC2PublicIP:
+    Description: Public IP address of the EC2 instance
+    Value: !GetAtt EC2Instance.PublicIp
+    Export:
+      Name: !Sub "${AWS::StackName}-EC2Instance-PublicIP"
+
+  EC2PublicDNS:
+    Description: Public DNS name of the EC2 instance
+    Value: !GetAtt EC2Instance.PublicDnsName
+    Export:
+      Name: !Sub "${AWS::StackName}-EC2Instance-PublicDNS"
+
+  IAMRoleArn:
+    Description: IAM Role ARN
+    Value: !GetAtt EC2Role.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-IAMRole-ARN"
