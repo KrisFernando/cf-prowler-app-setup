@@ -25,7 +25,7 @@ Parameters:
 
   InstanceSize:
     Type: String
-    Default: t4g.medium
+    Default: t3.medium
     AllowedValues:
       - t3.medium
       - t3a.medium
@@ -34,7 +34,7 @@ Parameters:
 
   LatestAmiId:
     Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
-    Default: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
+    Default: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 
 Resources:
   # VPC
@@ -108,11 +108,6 @@ Resources:
       GroupDescription: Security group for Prowler EC2 instance
       VpcId: !Ref VPC
       SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: !Ref AllowedCIDR
-          Description: HTTP access from specified CIDR
         - IpProtocol: tcp
           FromPort: 3000
           ToPort: 3000
@@ -234,57 +229,65 @@ Resources:
       IamInstanceProfile: !Ref EC2InstanceProfile
       UserData:
         Fn::Base64: !Sub |
-          # This script sets up Docker and Docker Compose on an Amazon Linux 2023 EC2 instance.
-          # It is designed to be used as a UserData script during instance launch.
+          #!/bin/bash
 
-          # 1. Update system packages
-          sudo dnf update -y
+          # Update the system
+          dnf update -y
 
-          # 2. Install dnf-plugins-core (required for dnf config-manager)
-          sudo dnf -y install dnf-plugins-core
+          # Install Docker
+          dnf install -y docker
 
-          # 3. Add the official Docker CE repository for Amazon Linux
-          sudo dnf config-manager --add-repo https://download.docker.com/linux/amazonlinux/docker-ce.repo
+          # Start and enable Docker service
+          systemctl start docker
+          systemctl enable docker
 
-          # 4. Clean and rebuild dnf cache to recognize the new Docker repository
-          sudo dnf clean all
-          sudo dnf makecache
+          # Add ec2-user to docker group (allows running docker without sudo)
+          usermod -a -G docker ec2-user
 
-          # 5. Install Docker CE, Docker CLI, containerd.io, docker-buildx-plugin, and docker-compose-plugin
-          # This command installs all necessary Docker components, including the Compose plugin, from the official repository.
-          sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+          # Install Docker Compose plugin (preferred method for newer Docker versions)
+          mkdir -p /usr/local/lib/docker/cli-plugins
+          curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/lib/docker/cli-plugins/docker-compose
+          chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
-          # 6. Start and enable Docker service
-          sudo systemctl start docker
-          sudo systemctl enable docker
+          # Also install as standalone binary for fallback
+          curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          chmod +x /usr/local/bin/docker-compose
 
-          # 7. Add ec2-user to the docker group
-          # This allows the ec2-user to run docker commands without 'sudo' in future SSH sessions.
-          # Note: This change will take effect for new login sessions, not for the current UserData script execution.
-          sudo usermod -aG docker ec2-user
+          # Create a symbolic link for easier access
+          ln -s /usr/local/bin/docker-compose /usr/bin/docker-compose
 
-          # 8. Verify installations
-          sudo docker ps
-          sudo docker compose version
+          # Create a working directory for Prowler
+          mkdir -p /home/ec2-user/prowler
+          cd /home/ec2-user/prowler
 
-          # --- Prowler App Setup ---
-          # This section downloads the Prowler docker-compose files and starts the application.
-
-          # Change to the ec2-user's home directory to download Prowler files
-          # This ensures the files are in a standard location for the user.
-          cd /home/ec2-user || { echo "Failed to change directory to /home/ec2-user. Exiting."; exit 1; }
-
-          # Download Prowler docker-compose.yml
+          # Download Prowler configuration files
           curl -LO https://raw.githubusercontent.com/prowler-cloud/prowler/refs/heads/master/docker-compose.yml
-
-          # Download Prowler .env file
           curl -LO https://raw.githubusercontent.com/prowler-cloud/prowler/refs/heads/master/.env
 
-          # Start Prowler containers using docker compose
-          # Using 'sudo' here because the UserData script runs as root, and the 'newgrp docker'
-          # command for ec2-user is not effective for the current script execution.
-          # For subsequent manual runs by ec2-user, 'sudo' might not be needed after re-logging in.
-          sudo docker compose up -d
+          # Get the public IP address of the instance
+          PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
+
+          # Modify the .env file to use the public IP instead of localhost
+          sed -i "s/localhost/$PUBLIC_IP/g" .env
+          sed -i 's/127\.0\.0\.1:3000:3000/0.0.0.0:3000:3000/g' docker-compose.yml
+
+          # Set proper ownership for ec2-user
+          chown -R ec2-user:ec2-user /home/ec2-user/prowler
+
+          # Wait for Docker service to be fully ready
+          sleep 10
+
+          # Set Default Platform
+          export DOCKER_DEFAULT_PLATFORM=linux/amd64
+
+          # Run Docker Compose as ec2-user (try plugin first, fallback to standalone)
+          sudo -u ec2-user bash -c 'cd /home/ec2-user/prowler && (docker compose up -d || docker-compose up -d)'
+
+          # Optional: Add Docker Compose to PATH for all users
+          echo 'export PATH="/usr/local/bin:$PATH"' >> /etc/profile
+
+          # Log completion
+          echo "Docker and Prowler setup completed at $(date)" >> /var/log/userdata-setup.log
 
       Tags:
         - Key: Name
